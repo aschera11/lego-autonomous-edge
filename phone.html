@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RS Q e-tron // EDGE RELAY</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<style>
+  body { background: #080c10; color: #00c8ff; font-family: 'Share Tech Mono', monospace; text-align: center; padding: 15px; margin: 0; }
+  .box { border: 1px solid #1c2a36; background: #0d1318; padding: 20px; border-radius: 8px; margin-bottom: 20px; width: 100%; box-sizing: border-box; }
+  h1 { font-size: 1.2rem; margin-top: 0; color: #fff; }
+  #pin-display { font-size: 4rem; color: #00e676; margin: 10px 0; text-shadow: 0 0 15px rgba(0,230,118,0.4); }
+  button { background: transparent; border: 1px solid #00c8ff; color: #00c8ff; padding: 15px; width: 100%; font-family: inherit; font-size: 1.2rem; font-weight: bold; cursor: pointer; border-radius: 4px; margin-top: 10px; }
+  button:active { background: #00c8ff; color: #000; }
+  #video-preview { width: 100%; border-radius: 8px; border: 1px solid #1c2a36; margin-top: 15px; }
+  .log { font-size: 0.7rem; color: #3a5060; text-align: left; margin-top: 10px; height: 120px; overflow-y: auto; word-wrap: break-word; }
+</style>
+</head>
+<body>
+
+<div class="box">
+  <h1>1. CONNECT LEGO HUB</h1>
+  <button id="btn-hub">PAIR BLUETOOTH</button>
+  <div id="hub-status" style="margin-top: 10px; color: #ffab00;">DISCONNECTED</div>
+</div>
+
+<div class="box">
+  <h1>2. CELLULAR PIN</h1>
+  <div id="pin-display">----</div>
+  <div id="webrtc-status" style="color: #ffab00; font-size: 0.9rem;">WAITING FOR CONTROLLER...</div>
+  <video id="video-preview" autoplay playsinline muted></video>
+</div>
+
+<div class="log" id="debug-log">SYSTEM BOOT...<br></div>
+
+<script>
+function log(msg) { 
+  const logEl = document.getElementById('debug-log');
+  logEl.innerHTML += msg + '<br>'; 
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ── 1. WEBRTC & DYNAMIC CAMERA SETUP ──
+let localStream = null;
+let peer = null;
+let laptopConn = null;
+let activeCall = null; 
+let torchOn = false;
+let currentFacingMode = 'environment';
+const pin = Math.floor(1000 + Math.random() * 9000); 
+const peerId = 'rsq-' + pin;
+
+document.getElementById('pin-display').textContent = pin;
+
+async function startCamera(facingMode) {
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); }
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ 
+      video: { facingMode: facingMode, advanced: [{torch: false}] }, audio: false 
+    });
+    const videoPreview = document.getElementById('video-preview');
+    videoPreview.srcObject = localStream;
+    videoPreview.style.transform = facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
+    
+    if (activeCall && activeCall.peerConnection) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      const sender = activeCall.peerConnection.getSenders().find(s => s.track.kind === 'video');
+      if (sender) sender.replaceTrack(videoTrack);
+    }
+    log('Camera active: ' + facingMode);
+  } catch(err) { log('CAMERA ERR: ' + err.message); }
+}
+
+startCamera(currentFacingMode).then(() => initPeer());
+
+function initPeer() {
+  peer = new Peer(peerId);
+  peer.on('open', id => log('Bridge Server Active. ID: ' + id));
+  
+  peer.on('connection', conn => {
+    laptopConn = conn;
+    document.getElementById('webrtc-status').textContent = "CONTROLLER CONNECTED!";
+    document.getElementById('webrtc-status').style.color = "#00e676";
+    log('Controller connected to telemetry stream.');
+
+    if (localStream) {
+      log('Transmitting video feed...');
+      activeCall = peer.call(conn.peer, localStream);
+    }
+
+    conn.on('data', data => {
+      if (data.cmd === 'ping') conn.send({ type: 'pong', time: data.time }); // P2P Latency return
+      else if (data.cmd === 'flash') toggleFlash();
+      else if (data.cmd === 'flip_cam') flipCamera();
+      else if (data.cmd) sendToHub(data.cmd);
+    });
+    
+    conn.on('close', () => {
+      document.getElementById('webrtc-status').textContent = "CONTROLLER DISCONNECTED.";
+      document.getElementById('webrtc-status').style.color = "#ff2d2d";
+      laptopConn = null;
+      activeCall = null;
+    });
+  });
+}
+
+function flipCamera() {
+  currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+  torchOn = false; 
+  startCamera(currentFacingMode);
+}
+
+async function toggleFlash() {
+  if (!localStream || currentFacingMode === 'user') return;
+  const track = localStream.getVideoTracks()[0];
+  torchOn = !torchOn;
+  try { await track.applyConstraints({ advanced: [{ torch: torchOn }] }); log('Torch toggled: ' + torchOn); } 
+  catch(e) { log('Torch not supported on this lens.'); }
+}
+
+// ── 2. SENSOR FUSION (GPS + 3D VERTICAL IMU MATH) ──
+let currentGps = { lat: 0, lon: 0, speed: 0, heading: 0 };
+let smoothVx = 0, smoothVy = 0, imuHeading = 0;
+let lastLat = null, lastLon = null, gpsHeading = 0, isMoving = false;
+
+function getBearing(lat1, lon1, lat2, lon2) {
+  const p1 = lat1 * Math.PI/180, p2 = lat2 * Math.PI/180, dl = (lon2-lon1) * Math.PI/180;
+  const y = Math.sin(dl) * Math.cos(p2), x = Math.cos(p1)*Math.sin(p2) - Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+if ("geolocation" in navigator) {
+  navigator.geolocation.watchPosition(pos => {
+    const lat = pos.coords.latitude;
+    const lon = pos.coords.longitude;
+    const speed = pos.coords.speed || 0;
+    
+    if (lastLat !== null && speed > 0.5) { // 1.8 km/h threshold
+       gpsHeading = getBearing(lastLat, lastLon, lat, lon);
+       isMoving = true;
+    } else {
+       isMoving = false;
+    }
+    
+    lastLat = lat; lastLon = lon;
+    currentGps.lat = lat; currentGps.lon = lon;
+    currentGps.speed = (speed * 3.6).toFixed(1);
+    currentGps.heading = isMoving ? gpsHeading : imuHeading;
+  }, err => log('GPS ERR: ' + err.message), { enableHighAccuracy: true });
+}
+
+// 3D Rotation Matrix for Vertical Phones
+function handleIMU(event) {
+  let alpha = event.alpha, beta = event.beta, gamma = event.gamma;
+  if (alpha === null) return;
+
+  const rad = Math.PI / 180;
+  const a = alpha * rad, b = beta * rad, g = gamma * rad;
+
+  // Project the -Z vector (back camera) onto the X-Y Earth plane
+  const vX = -Math.cos(a) * Math.sin(g) - Math.sin(a) * Math.sin(b) * Math.cos(g);
+  const vY = -Math.sin(a) * Math.sin(g) + Math.cos(a) * Math.sin(b) * Math.cos(g);
+
+  // Low-Pass Filter on the raw X/Y vectors to kill Lego motor jitter completely
+  smoothVx = smoothVx * 0.85 + vX * 0.15;
+  smoothVy = smoothVy * 0.85 + vY * 0.15;
+
+  imuHeading = Math.atan2(smoothVx, smoothVy) * 180 / Math.PI;
+  if (imuHeading < 0) imuHeading += 360;
+
+  if (!isMoving) currentGps.heading = imuHeading;
+}
+
+if (window.DeviceOrientationAbsoluteEvent) window.addEventListener("deviceorientationabsolute", handleIMU, true);
+else window.addEventListener("deviceorientation", handleIMU, true);
+
+function getCarNetwork() {
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (conn) return { type: conn.effectiveType || 'cellular', rtt: conn.rtt || 0 };
+  return { type: 'unknown', rtt: 0 };
+}
+
+// Stream telemetry to controller
+setInterval(() => {
+  if (laptopConn && laptopConn.open) {
+    laptopConn.send({ type: 'telemetry', gps: currentGps, battery: hubBattery, net: getCarNetwork() });
+  }
+}, 500);
+
+// ── 3. WEB BLUETOOTH (LEGO HUB WITH FRAGMENT BUFFER) ──
+const SERVICE_UUID = 'c5f50001-8280-46da-89f4-6d8051e4aeef';
+const CHAR_UUID    = 'c5f50002-8280-46da-89f4-6d8051e4aeef';
+let bleChar = null, rdyReceived = false, hubBattery = "0.00";
+let bleBuffer = ""; // Solves the chopped-up BLE packets!
+
+document.getElementById('btn-hub').addEventListener('click', async () => {
+  try {
+    const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE_UUID] }], optionalServices: [SERVICE_UUID] });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    bleChar = await service.getCharacteristic(CHAR_UUID);
+    await bleChar.startNotifications();
+    
+    bleChar.addEventListener('characteristicvaluechanged', e => {
+      const raw = new Uint8Array(e.target.value.buffer);
+      let str = new TextDecoder().decode(raw);
+      if (raw[0] === 0x01) str = str.substring(1); 
+      
+      bleBuffer += str; // Add fragmented packet to buffer
+      
+      // REGEX matches anywhere in the string
+      const vMatch = bleBuffer.match(/v:(\d+)/);
+      if (vMatch) {
+         hubBattery = (parseInt(vMatch[1]) / 1000).toFixed(2);
+         bleBuffer = ""; // Reset buffer
+      }
+      if (bleBuffer.includes('rdy')) {
+         rdyReceived = true;
+         bleBuffer = ""; // Reset buffer
+      }
+      
+      if (bleBuffer.length > 50) bleBuffer = bleBuffer.substring(bleBuffer.length - 20); // Keep small
+    });
+    
+    document.getElementById('hub-status').textContent = "LOCKED SECURE";
+    document.getElementById('hub-status').style.color = "#00e676";
+    document.getElementById('btn-hub').style.display = 'none';
+    log('Bluetooth Hub Connected.');
+    
+    setTimeout(() => { sendToHub('x'); sendToHub('v'); sendToHub('h'); }, 500); 
+    setInterval(() => { sendToHub('b'); }, 3000);
+  } catch(e) { log('BLE ERR: ' + e.message); }
+});
+
+async function sendToHub(cmd) {
+  if (!bleChar) return;
+  let waits = 0;
+  while (!rdyReceived && waits < 10) { await new Promise(r => setTimeout(r, 10)); waits++; }
+  rdyReceived = false;
+  try { await bleChar.writeValue(new Uint8Array([0x06, cmd.charCodeAt(0)])); } catch(e) {}
+}
+</script>
+</body>
+</html>

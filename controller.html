@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>RS Q e-tron // MOBILE CONTROLLER</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+  :root { 
+    --bg: #080c10; --panel: #0d1318; --border: #1c2a36; 
+    --accent: #00c8ff; --danger: #ff2d2d; --success: #00e676; 
+    --warn: #ffab00; --text: #c8dce8; --muted: #3a5060; 
+    --btn-bg: #0f1c26; --btn-press: #003a52; --mission: #aa00ff;
+    --glow: 0 0 18px rgba(0,200,255,0.25); 
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  html, body { 
+    min-height: 100%; background: var(--bg); color: var(--text); 
+    font-family: 'Rajdhani', sans-serif; overflow-x: hidden; overflow-y: auto; 
+    user-select: none; touch-action: manipulation; 
+  }
+  body::before { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0; background-image: linear-gradient(rgba(0,200,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0,200,255,0.03) 1px, transparent 1px); background-size: 40px 40px; }
+  
+  #app { position: relative; z-index: 1; display: flex; flex-direction: column; padding: 10px; gap: 10px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 5px; }
+  .logo-main { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.1em; color: #fff; }
+  .logo-sub { font-family: 'Share Tech Mono', monospace; font-size: 0.6rem; color: var(--muted); letter-spacing: 0.15em; }
+
+  .tabs { display: flex; gap: 6px; flex-shrink: 0; }
+  .tab { flex: 1; padding: 12px 5px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-family: 'Share Tech Mono', monospace; font-size: 0.75rem; font-weight: bold; letter-spacing: 0.05em; cursor: pointer; text-align: center; transition: all 0.2s; }
+  .tab.active { border-color: var(--accent); color: var(--accent); background: var(--btn-press); }
+  .tab[data-view="mission"].active { border-color: var(--mission); color: var(--mission); background: rgba(170,0,255,0.15); }
+
+  main { display: flex; flex-direction: column; width: 100%; }
+  .view { display: none; width: 100%; flex-direction: column; gap: 12px; padding-bottom: 30px; }
+  .view.active { display: flex; }
+
+  #connect-screen { flex-direction: column; align-items: center; justify-content: center; height: 70vh; gap: 20px; text-align: center; }
+  .pin-input { font-size: 4rem; background: transparent; border: none; border-bottom: 2px solid var(--accent); color: var(--success); width: 200px; text-align: center; outline: none; font-family: 'Share Tech Mono', monospace; }
+  .btn-connect { padding: 15px; width: 100%; max-width: 300px; background: transparent; border: 1px solid var(--accent); color: var(--accent); font-family: 'Rajdhani', sans-serif; font-size: 1.2rem; font-weight: 700; letter-spacing: 0.1em; cursor: pointer; border-radius: 6px; }
+  .btn-connect:active { background: var(--accent); color: var(--bg); }
+
+  #work-area { display: flex; flex-direction: column; width: 100%; gap: 10px; transition: all 0.3s; }
+  
+  #video-container { width: 100%; aspect-ratio: 16/9; background: #000; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; position: relative; }
+  #video-feed { width: 100%; height: 100%; object-fit: cover; transition: transform 0.3s; }
+  #yolo-canvas, #hud-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+  #hud-canvas { z-index: 3; } 
+  
+  #map-container { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); display: flex; flex-direction: column; overflow: hidden; }
+  #real-map { width: 100%; height: 180px; z-index: 10; cursor: crosshair; }
+  #map-coords { text-align: center; font-family: 'Share Tech Mono', monospace; font-size: 0.7rem; color: var(--text); background: var(--panel); border-top: 1px solid var(--border); padding: 8px; }
+
+  /* OVERLAYS */
+  .overlay-btn { position: absolute; z-index: 10; font-family: 'Share Tech Mono', monospace; font-size: 0.65rem; font-weight: bold; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--accent); background: rgba(0,0,0,0.65); color: var(--accent); }
+  .ai-toggle { bottom: 6px; right: 6px; }
+  .ai-toggle.active { background: var(--danger); color: #fff; border-color: var(--danger); box-shadow: 0 0 10px rgba(255,45,45,0.6); }
+  .flash-toggle { top: 6px; right: 6px; border-color: #fff; color: #fff; }
+  .flash-toggle.active { background: #fff; color: #000; box-shadow: 0 0 10px rgba(255,255,255,0.6); }
+  .cam-flip-btn { top: 6px; right: 85px; }
+  
+  .telemetry-overlay { position: absolute; z-index: 5; font-family: 'Share Tech Mono', monospace; font-size: 0.6rem; background: rgba(0,0,0,0.65); padding: 4px 8px; border-radius: 4px; color: var(--success); }
+  #telemetry-speed { left: 6px; top: 6px; color: var(--success); }
+  #telemetry-car-net { left: 6px; bottom: 30px; color: var(--accent); } /* NEW CAR NET BADGE */
+  #telemetry-p2p   { left: 6px; bottom: 6px; color: var(--warn); }
+  #telemetry-batt  { right: auto; left: 100px; bottom: 6px; color: var(--warn); }
+
+  .dpad { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); gap: 8px; width: 100%; max-width: 350px; aspect-ratio: 1; margin: 10px auto; }
+  .btn { background: var(--btn-bg); border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 2.2rem; display: flex; align-items: center; justify-content: center; position: relative; transition: 0.1s; }
+  .btn:active, .btn.pressed { background: var(--btn-press); border-color: var(--accent); color: var(--accent); box-shadow: var(--glow); }
+  .btn.stop { border-color: rgba(255,45,45,0.3); color: var(--danger); font-size: 1.5rem; }
+  .btn.stop:active, .btn.stop.pressed { background: rgba(255,45,45,0.12); border-color: var(--danger); }
+  .empty { background: transparent; pointer-events: none; }
+
+  body.mission-mode #work-area { flex-direction: column-reverse; } 
+  body.mission-mode #real-map { height: 45vh; } 
+  body.mission-mode #video-container { width: 50%; align-self: flex-end; border: 2px solid var(--mission); margin-top: -60px; z-index: 100; box-shadow: 0 4px 10px rgba(0,0,0,0.5); }
+  body.mission-mode #manual-controls { display: none; }
+  
+  .mission-controls { display: none; width: 100%; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  body.mission-mode .mission-controls { display: flex; }
+  .m-btn { flex: 1 1 45%; padding: 15px 5px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-family: 'Share Tech Mono', monospace; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; text-align: center; }
+  .m-btn.run { border-color: var(--mission); color: var(--mission); }
+  .m-btn.run:active { background: rgba(170,0,255,0.2); }
+  .m-btn.stop { border-color: var(--danger); color: var(--danger); flex: 1 1 100%; font-size: 1.2rem; padding: 20px 5px; }
+
+  .custom-arrow svg { display: block; margin: -12px 0 0 -12px; transition: transform 0.3s ease; }
+  .wp-label { color: #fff; font-size: 12px; font-weight: bold; font-family: sans-serif; text-shadow: 1px 1px 2px #000; text-align: center; }
+</style>
+</head>
+<body class="teleop-mode">
+
+<div id="app">
+  <header>
+    <div class="logo">
+      <div class="logo-main">RS Q e-tron</div>
+      <div class="logo-sub" id="mode-subtitle">MOBILE WEBRTC // EDGE AI</div>
+    </div>
+    <div style="font-family: 'Share Tech Mono'; font-size: 0.6rem; color: var(--muted);" id="t-cmd">CMD: —</div>
+  </header>
+
+  <div class="tabs" id="nav-tabs" style="display: none;">
+    <div class="tab active" data-view="manual">TELEOP</div>
+    <div class="tab" data-view="mission">MISSION</div>
+  </div>
+
+  <main>
+    <div id="view-connect" class="view active" style="display:flex;">
+      <div id="connect-screen">
+        <div style="color: var(--muted); font-family: 'Share Tech Mono'; font-size: 1rem;">ENTER CAR PIN</div>
+        <input type="text" id="pin-input" class="pin-input" maxlength="4" autocomplete="off" inputmode="numeric">
+        <button class="btn-connect" id="connect-btn">LINK SATELLITE</button>
+        <div id="status-log" style="font-family: 'Share Tech Mono'; font-size: 0.8rem; color: var(--warn); margin-top: 10px;"></div>
+      </div>
+    </div>
+
+    <div id="view-cockpit" class="view">
+      <div id="work-area">
+        <div id="video-container">
+          <button class="overlay-btn flash-toggle" id="flash-toggle-btn">FLASH</button>
+          <button class="overlay-btn cam-flip-btn" id="cam-flip-btn">FLIP CAM</button>
+          <button class="overlay-btn ai-toggle" id="ai-toggle-btn">AI AEB: LOAD...</button>
+          
+          <div class="telemetry-overlay" id="telemetry-speed">GPS: WAIT...</div>
+          <div class="telemetry-overlay" id="telemetry-car-net">📡 CAR NET: WAIT...</div>
+          <div class="telemetry-overlay" id="telemetry-p2p">📶 P2P: --/10</div>
+          <div class="telemetry-overlay" id="telemetry-batt">🔋 -- V</div>
+          
+          <video id="video-feed" autoplay playsinline muted></video>
+          <canvas id="yolo-canvas"></canvas>
+          <canvas id="hud-canvas"></canvas>
+        </div>
+
+        <div id="map-container">
+          <div id="real-map"></div>
+          <div id="map-coords">LAT: --.----- | LON: --.----- | HDG: ---°</div>
+        </div>
+      </div>
+
+      <div class="dpad" id="manual-controls">
+        <div class="empty"></div><button class="btn" data-down="w" data-up="v">▲</button><div class="empty"></div>
+        <button class="btn" data-down="a" data-up="h">◀</button>
+        <button class="btn stop" data-down="x" data-up="x">■</button>
+        <button class="btn" data-down="d" data-up="h">▶</button>
+        <div class="empty"></div><button class="btn" data-down="s" data-up="v">▼</button><div class="empty"></div>
+      </div>
+
+      <div class="mission-controls" id="auto-controls">
+        <button class="m-btn" id="btn-clear">CLEAR PTS</button>
+        <button class="m-btn" id="btn-reverse">REVERSE</button>
+        <button class="m-btn run" id="btn-to-start">1. GO TO START</button>
+        <button class="m-btn run" id="btn-run-route">2. EXECUTE ROUTE</button>
+        <button class="m-btn stop" id="btn-stop-mission">EMERGENCY STOP</button>
+        <div id="mission-log" style="width:100%; text-align:center; font-family:'Share Tech Mono'; font-size:0.8rem; color:var(--mission); margin-top:5px; font-weight: bold;">TAP MAP TO ADD POINTS (0/20)</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ── 1. WEBRTC GLOBAL BRIDGE & COMMAND ROUTING ──
+let peer = new Peer(); 
+let carConn = null;
+let targetSteerOffset = 0; 
+let isMirrored = false; 
+
+const logEl = document.getElementById('status-log');
+document.getElementById('connect-btn').addEventListener('click', () => {
+  const pin = document.getElementById('pin-input').value;
+  if(pin.length !== 4) { logEl.textContent = "INVALID PIN"; return; }
+  
+  logEl.textContent = "ROUTING TO EDGE DEVICE...";
+  const targetId = 'rsq-' + pin;
+  
+  carConn = peer.connect(targetId);
+  
+  carConn.on('open', () => {
+    document.getElementById('view-connect').style.display = 'none';
+    document.getElementById('view-cockpit').classList.add('active');
+    document.getElementById('nav-tabs').style.display = 'flex';
+    setTimeout(() => map.invalidateSize(), 300);
+    setTimeout(() => { sendCmd('x'); sendCmd('v'); sendCmd('h'); }, 500); 
+  });
+
+  carConn.on('data', data => {
+    if (data.type === 'telemetry') {
+       updateTelemetry(data.gps, data.battery);
+       // Update Car's Native Network Signal
+       if(data.net) {
+         const cNet = document.getElementById('telemetry-car-net');
+         cNet.innerHTML = `📡 CAR NET: ${data.net.type.toUpperCase()} (${data.net.rtt}ms)`;
+         cNet.style.color = (data.net.type === 'wifi' || data.net.type === '4g') ? 'var(--success)' : 'var(--warn)';
+       }
+    }
+    
+    // Update P2P Controller Connection Quality
+    if (data.type === 'pong') {
+       const latency = Date.now() - data.time;
+       let score = 10;
+       if (latency > 50) score = 9; if (latency > 100) score = 8;
+       if (latency > 150) score = 7; if (latency > 200) score = 6;
+       if (latency > 300) score = 5; if (latency > 400) score = 4;
+       if (latency > 600) score = 3; if (latency > 800) score = 2;
+       if (latency > 1000) score = 1;
+       
+       let color = score > 6 ? 'var(--success)' : (score > 3 ? 'var(--warn)' : 'var(--danger)');
+       const p2pEl = document.getElementById('telemetry-p2p');
+       p2pEl.innerHTML = `📶 P2P: ${score}/10`;
+       p2pEl.style.color = color;
+    }
+  });
+
+  carConn.on('close', () => { alert("CONNECTION LOST!"); location.reload(); });
+});
+
+setInterval(() => { if (carConn && carConn.open) carConn.send({ cmd: 'ping', time: Date.now() }); }, 1000);
+
+peer.on('call', call => {
+  call.answer(); 
+  call.on('stream', remoteStream => { document.getElementById('video-feed').srcObject = remoteStream; });
+});
+
+function sendCmd(cmd) { 
+  if (carConn && carConn.open) { 
+    carConn.send({ cmd: cmd }); 
+    if(cmd !== 'flash' && cmd !== 'flip_cam' && cmd !== 'ping') document.getElementById('t-cmd').textContent = "CMD: " + cmd.toUpperCase();
+    if (cmd === 'a') targetSteerOffset = -1; else if (cmd === 'd') targetSteerOffset = 1; else if (cmd === 'h' || cmd === 'x') targetSteerOffset = 0;
+  } 
+}
+
+// ── FLASHLIGHT & CAMERA FLIP ──
+let flashOn = false;
+const flashBtn = document.getElementById('flash-toggle-btn');
+flashBtn.addEventListener('click', () => {
+  flashOn = !flashOn; sendCmd('flash'); 
+  flashBtn.classList.toggle('active', flashOn);
+});
+
+document.getElementById('cam-flip-btn').addEventListener('click', () => {
+  sendCmd('flip_cam'); flashOn = false; flashBtn.classList.remove('active');
+  isMirrored = !isMirrored; 
+  document.getElementById('video-feed').style.transform = isMirrored ? 'scaleX(-1)' : 'scaleX(1)';
+});
+
+// ── 2. AR HUD (TRAJECTORY LINES ANIMATION) ──
+const videoEl = document.getElementById('video-feed');
+const hudCanvas = document.getElementById('hud-canvas');
+const hudCtx = hudCanvas.getContext('2d');
+let currentSteerOffset = 0;
+
+function drawARHUD() {
+  if (hudCanvas.width !== videoEl.clientWidth) {
+    hudCanvas.width = videoEl.clientWidth;
+    hudCanvas.height = videoEl.clientHeight;
+  }
+  const W = hudCanvas.width; const H = hudCanvas.height;
+  hudCtx.clearRect(0, 0, W, H);
+  if (W === 0 || H === 0) { requestAnimationFrame(drawARHUD); return; }
+
+  let activeOffset = targetSteerOffset;
+  if (isMirrored) activeOffset *= -1; 
+
+  currentSteerOffset += (activeOffset - currentSteerOffset) * 0.15;
+  const curveAmount = currentSteerOffset * (W * 0.35); 
+
+  let grad = hudCtx.createLinearGradient(0, H, 0, H * 0.4);
+  grad.addColorStop(0, 'rgba(255, 45, 45, 0.9)');
+  grad.addColorStop(0.3, 'rgba(255, 171, 0, 0.9)');
+  grad.addColorStop(1, 'rgba(0, 230, 118, 0.6)');
+
+  hudCtx.lineWidth = 6; hudCtx.lineCap = 'round'; hudCtx.setLineDash([H * 0.06, H * 0.04]); hudCtx.strokeStyle = grad;
+  hudCtx.beginPath(); hudCtx.moveTo(W * 0.15, H); hudCtx.quadraticCurveTo(W * 0.3 + (curveAmount * 0.5), H * 0.65, W * 0.4 + curveAmount, H * 0.45); hudCtx.stroke();
+  hudCtx.beginPath(); hudCtx.moveTo(W * 0.85, H); hudCtx.quadraticCurveTo(W * 0.7 + (curveAmount * 0.5), H * 0.65, W * 0.6 + curveAmount, H * 0.45); hudCtx.stroke();
+
+  hudCtx.setLineDash([]); hudCtx.lineWidth = 4; hudCtx.strokeStyle = 'rgba(255, 45, 45, 0.8)';
+  hudCtx.beginPath(); hudCtx.moveTo(W * 0.20, H * 0.85); hudCtx.quadraticCurveTo(W * 0.5 + (curveAmount * 0.15), H * 0.82, W * 0.80, H * 0.85); hudCtx.stroke();
+
+  requestAnimationFrame(drawARHUD);
+}
+drawARHUD();
+
+// ── 3. UI TAB SWITCHING ──
+let autoMissionActive = false;
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    sendCmd('x'); sendCmd('v'); sendCmd('h'); 
+    autoMissionActive = false; 
+    document.querySelectorAll('.tab').forEach(e => e.classList.remove('active'));
+    tab.classList.add('active');
+    if (tab.dataset.view === 'manual') {
+      document.body.className = 'teleop-mode';
+      document.getElementById('mode-subtitle').textContent = "MOBILE WEBRTC // EDGE AI";
+    } else if (tab.dataset.view === 'mission') {
+      document.body.className = 'mission-mode';
+      document.getElementById('mode-subtitle').textContent = "AUTONOMOUS NAVIGATION";
+    }
+    setTimeout(() => { if(map) map.invalidateSize(); }, 350); 
+  });
+});
+
+// ── 4. MAPS & SENSOR FUSION TELEMETRY ──
+const arrowIconHtml = `<svg width="24" height="24" viewBox="0 0 24 24"><path fill="#00c8ff" stroke="#fff" stroke-width="1.5" d="M12 2L22 22 12 18 2 22z" /></svg>`;
+let map = L.map('real-map', { zoomControl: false }).setView([0, 0], 2);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png').addTo(map);
+let carMarker = L.marker([0,0], { icon: L.divIcon({ className: 'custom-arrow', html: `<div id="arrow-rotator">${arrowIconHtml}</div>`, iconSize: [24,24], iconAnchor: [12,12] }) }).addTo(map);
+
+let currentLat = 0, currentLon = 0, currentHeading = 0;
+let missionWaypoints = [], wpMarkers = [], routePolyline = null; let mapInit = false;
+
+function updateTelemetry(gps, batt) {
+  document.getElementById('telemetry-batt').textContent = `🔋 ${batt} V`;
+  if (gps && gps.lat !== 0) {
+    currentLat = gps.lat; currentLon = gps.lon; currentHeading = gps.heading;
+    document.getElementById('telemetry-speed').textContent = `${gps.speed} km/h`;
+    document.getElementById('map-coords').innerHTML = `LAT: <span style="color:var(--accent)">${currentLat.toFixed(5)}</span> | LON: <span style="color:var(--accent)">${currentLon.toFixed(5)}</span> | HDG: <span style="color:var(--accent)">${currentHeading.toFixed(0)}°</span>`;
+    
+    carMarker.setLatLng([currentLat, currentLon]);
+    const rot = document.getElementById('arrow-rotator'); if(rot) rot.style.transform = `rotate(${currentHeading}deg)`;
+    if(!mapInit) { map.setView([currentLat, currentLon], 19); mapInit = true; }
+    if(autoMissionActive) map.panTo([currentLat, currentLon]);
+  }
+}
+
+map.on('click', (e) => {
+  if(!document.body.classList.contains('mission-mode') || autoMissionActive) return;
+  if(missionWaypoints.length >= 20) return;
+  missionWaypoints.push({lat: e.latlng.lat, lng: e.latlng.lng}); drawRoute();
+});
+
+function drawRoute() {
+  if (routePolyline) map.removeLayer(routePolyline);
+  wpMarkers.forEach(m => map.removeLayer(m)); wpMarkers = [];
+  if (missionWaypoints.length > 0) {
+    const latlngs = missionWaypoints.map(wp => [wp.lat, wp.lng]);
+    routePolyline = L.polyline(latlngs, {color: 'var(--mission)', weight: 3, dashArray: '5, 5'}).addTo(map);
+    missionWaypoints.forEach((wp, i) => {
+      const m = L.marker([wp.lat, wp.lng], {
+        icon: L.divIcon({ className: 'wp-label', html: `<div style="background:var(--mission); border-radius:50%; width:20px; height:20px; line-height:20px;">${i+1}</div>`, iconSize: [20,20], iconAnchor: [10,10] })
+      }).addTo(map); wpMarkers.push(m);
+    });
+  }
+  document.getElementById('mission-log').textContent = `POINTS: ${missionWaypoints.length}/20 READY.`;
+}
+
+// ── 5. TRUE AUTONOMOUS NAVIGATION ENGINE ──
+function getDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371e3, p1 = lat1 * Math.PI/180, p2 = lat2 * Math.PI/180;
+  const dp = (lat2-lat1) * Math.PI/180, dl = (lon2-lon1) * Math.PI/180;
+  const a = Math.sin(dp/2) * Math.sin(dp/2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl/2) * Math.sin(dl/2);
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+}
+function getBearing(lat1, lon1, lat2, lon2) {
+  const p1 = lat1 * Math.PI/180, p2 = lat2 * Math.PI/180, dl = (lon2-lon1) * Math.PI/180;
+  const y = Math.sin(dl) * Math.cos(p2), x = Math.cos(p1)*Math.sin(p2) - Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+function logMission(msg) { document.getElementById('mission-log').textContent = msg; }
+
+async function navigateTo(targetLat, targetLng, pointName) {
+  logMission(`DRIVING TO ${pointName}...`); sendCmd('w'); 
+  while (autoMissionActive) {
+    if (currentLat === 0) { logMission("AWAITING SATELLITE..."); await new Promise(r => setTimeout(r, 1000)); continue; }
+    let dist = getDistance(currentLat, currentLon, targetLat, targetLng);
+    if (dist < 3.5) { sendCmd('h'); sendCmd('v'); sendCmd('x'); return true; }
+    
+    let targetBearing = getBearing(currentLat, currentLon, targetLat, targetLng);
+    let diff = ((targetBearing - currentHeading + 540) % 360) - 180;
+    
+    let steerCmd = 'h';
+    if (diff > 20) steerCmd = 'd'; else if (diff < -20) steerCmd = 'a'; 
+    
+    logMission(`DIST: ${dist.toFixed(1)}m | BRG: ${targetBearing.toFixed(0)}° | HDG: ${currentHeading.toFixed(0)}°`);
+    sendCmd(steerCmd); await new Promise(r => setTimeout(r, 200)); sendCmd('w'); await new Promise(r => setTimeout(r, 500)); 
+  }
+  return false;
+}
+
+document.getElementById('btn-clear').addEventListener('click', () => { if(!autoMissionActive) { missionWaypoints = []; drawRoute(); } });
+document.getElementById('btn-reverse').addEventListener('click', () => { if(!autoMissionActive) { missionWaypoints.reverse(); drawRoute(); } });
+document.getElementById('btn-stop-mission').addEventListener('click', () => { autoMissionActive = false; sendCmd('x'); sendCmd('v'); sendCmd('h'); logMission("MISSION ABORTED."); });
+document.getElementById('btn-to-start').addEventListener('click', async () => {
+  if (missionWaypoints.length === 0 || autoMissionActive) return; autoMissionActive = true;
+  await navigateTo(missionWaypoints[0].lat, missionWaypoints[0].lng, "START");
+  if(autoMissionActive) logMission("ARRIVED AT START."); autoMissionActive = false;
+});
+document.getElementById('btn-run-route').addEventListener('click', async () => {
+  if (missionWaypoints.length === 0 || autoMissionActive) return; autoMissionActive = true;
+  for (let i = 0; i < missionWaypoints.length; i++) {
+    if (!autoMissionActive) break;
+    let success = await navigateTo(missionWaypoints[i].lat, missionWaypoints[i].lng, `WP ${i+1}`);
+    if(success && autoMissionActive) wpMarkers[i].setIcon(L.divIcon({ className: 'wp-label', html: `<div style="background:var(--success); border-radius:50%; width:20px; height:20px; line-height:20px;">${i+1}</div>`, iconSize: [20,20], iconAnchor: [10,10] }));
+  }
+  if (autoMissionActive) { logMission("MISSION COMPLETE."); sendCmd('x'); sendCmd('v'); sendCmd('h'); } autoMissionActive = false;
+});
+
+// ── 6. PRODUCTION AI AEB ──
+const canvas = document.getElementById('yolo-canvas'), ctx = canvas.getContext('2d'), aiBtn = document.getElementById('ai-toggle-btn');
+let aiModel = null, aiEnabled = false, isDetecting = false, lastAiRun = 0, threatCounter = 0;
+
+cocoSsd.load().then(m => { aiModel = m; aiBtn.textContent = "AI AEB: READY"; aiBtn.style.borderColor = "var(--success)"; });
+
+aiBtn.addEventListener('click', () => {
+  if (!aiModel) return; aiEnabled = !aiEnabled;
+  if (aiEnabled) { aiBtn.classList.add('active'); aiBtn.textContent = "AI AEB: ARMED"; detectFrame(performance.now()); } 
+  else { aiBtn.classList.remove('active'); aiBtn.textContent = "AI AEB: READY"; ctx.clearRect(0,0,canvas.width,canvas.height); threatCounter = 0; }
+});
+
+async function detectFrame(timestamp) {
+  if (!aiEnabled || isDetecting || !aiModel) return;
+  if (timestamp - lastAiRun < 100) { requestAnimationFrame(detectFrame); return; } 
+  
+  isDetecting = true; lastAiRun = timestamp;
+  if (canvas.width !== videoEl.clientWidth) { canvas.width = videoEl.clientWidth; canvas.height = videoEl.clientHeight; }
+  
+  const cW = canvas.width; const cH = canvas.height;
+  
+  try {
+    const predictions = await aiModel.detect(videoEl);
+    ctx.clearRect(0, 0, cW, cH);
+    
+    const vW = videoEl.videoWidth; const vH = videoEl.videoHeight;
+    const scale = Math.max(cW / vW, cH / vH);
+    const xOff = (cW - (vW * scale)) / 2; const yOff = (cH - (vH * scale)) / 2;
+
+    let frameThreatDetected = false;
+
+    predictions.forEach(p => {
+      let [px, py, pw, ph] = p.bbox;
+      let boxX = px * scale + xOff; let boxY = py * scale + yOff; let boxW = pw * scale; let boxH = ph * scale;
+
+      if (isMirrored) boxX = cW - boxX - boxW;
+
+      const bottomEdge = boxY + boxH; const centerX = boxX + (boxW / 2);
+      
+      let activeOffset = targetSteerOffset;
+      if (isMirrored) activeOffset *= -1; 
+      
+      const pathCenter = (cW * 0.5) + (activeOffset * cW * 0.35);
+      const inPath = (centerX > pathCenter - (cW * 0.225)) && (centerX < pathCenter + (cW * 0.225));
+      const distanceThreshold = ['person', 'dog', 'cat', 'bicycle', 'car'].includes(p.class) ? (cH * 0.65) : (cH * 0.85); 
+      
+      let boxColor = '#00e676';
+      let label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
+
+      if (inPath && bottomEdge > distanceThreshold && ((boxW * boxH) / (cW * cH) > 0.05)) {
+        boxColor = '#ff2d2d'; label = `⚠ THREAT IN PATH: ${p.class} ⚠`; frameThreatDetected = true;
+      }
+
+      ctx.strokeStyle = boxColor; ctx.lineWidth = 4; ctx.strokeRect(boxX, boxY, boxW, boxH);
+      ctx.fillStyle = boxColor; ctx.fillRect(boxX, boxY - 20, ctx.measureText(label).width + 10, 20);
+      ctx.fillStyle = '#000'; ctx.font = 'bold 12px Share Tech Mono'; ctx.fillText(label, boxX + 5, boxY - 5);
+    });
+
+    if (frameThreatDetected) {
+      threatCounter++;
+      if (threatCounter >= 3) {
+         sendCmd('x'); 
+         if (autoMissionActive) { autoMissionActive = false; logMission("MISSION ABORTED: AEB COLLISION"); }
+      }
+    } else { threatCounter = Math.max(0, threatCounter - 1); }
+
+  } catch(e) {}
+  
+  isDetecting = false; if (aiEnabled) requestAnimationFrame(detectFrame);
+}
+
+// ── 7. MANUAL TELEOP CONTROLS ──
+document.querySelectorAll('.btn[data-down]').forEach(btn => {
+  const press = (e) => { if(e) e.preventDefault(); if(btn.classList.contains('pressed')) return; btn.classList.add('pressed'); sendCmd(btn.dataset.down); };
+  const release = (e) => { if(e) e.preventDefault(); if(!btn.classList.contains('pressed')) return; btn.classList.remove('pressed'); sendCmd(btn.dataset.up); };
+  btn.addEventListener('touchstart', press, {passive: false}); btn.addEventListener('touchend', release, {passive: false}); btn.addEventListener('touchcancel', release, {passive: false});
+  btn.addEventListener('mousedown', press); btn.addEventListener('mouseup', release); btn.addEventListener('mouseleave', release);
+});
+</script>
+</body>
+</html>
